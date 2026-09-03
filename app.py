@@ -4,12 +4,11 @@ import numpy as np
 import joblib
 import os
 import sys
+import threading
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, ExtraTreesRegressor
 from sklearn.tree import DecisionTreeRegressor
-from sklearn.neural_network import MLPRegressor
 from sklearn.linear_model import Ridge, Lasso
-from sklearn.svm import SVR
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.model_selection import KFold
 import warnings
@@ -18,7 +17,7 @@ warnings.filterwarnings('ignore')
 class StackingRegressor(BaseEstimator, RegressorMixin):
     """Stacking Regressor modeli"""
     
-    def __init__(self, base_models=None, meta_model=None, cv=5, use_features_in_meta=True):
+    def __init__(self, base_models=None, meta_model=None, cv=3, use_features_in_meta=True):
         self.base_models = base_models or {}
         self.meta_model = meta_model
         self.cv = cv
@@ -79,6 +78,7 @@ app = Flask(__name__)
 model = None
 scaler = None
 label_encoder = None
+model_lock = threading.Lock()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -106,9 +106,9 @@ DESIGN_POINTS = {
 }
 
 def train_fallback_model():
-    """Eğer pickle dosyaları yüklenemezse veri setinden modeli eğitir"""
+    """Eğer pickle dosyaları yüklenemezse veri setinden modeli ultra hızlı eğitir"""
     global model, scaler, label_encoder
-    print("Veri setinden model otomatik eğitiliyor...")
+    print("Veri setinden model optimize şekilde eğitiliyor...")
     data_path = os.path.join(BASE_DIR, 'yeni_veri_seti_esit_orneklem.xlsx')
     if not os.path.exists(data_path):
         data_path = os.path.join(BASE_DIR, 'veri_seti.xlsx')
@@ -137,53 +137,62 @@ def train_fallback_model():
     
     base_models = {
         'Decision Tree': DecisionTreeRegressor(random_state=42),
-        'Random Forest': RandomForestRegressor(n_estimators=100, random_state=42),
-        'Gradient Boosting': GradientBoostingRegressor(n_estimators=100, random_state=42),
-        'Extra Trees': ExtraTreesRegressor(n_estimators=100, random_state=42),
-        'MLP': MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42),
+        'Random Forest': RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1),
+        'Gradient Boosting': GradientBoostingRegressor(n_estimators=50, random_state=42),
+        'Extra Trees': ExtraTreesRegressor(n_estimators=50, random_state=42, n_jobs=-1),
         'Ridge': Ridge(alpha=1.0),
-        'Lasso': Lasso(alpha=1.0),
-        'SVR': SVR(kernel='rbf', C=1.0)
+        'Lasso': Lasso(alpha=1.0)
     }
     
-    model = StackingRegressor(
+    trained_model = StackingRegressor(
         base_models=base_models,
-        meta_model=GradientBoostingRegressor(n_estimators=50, random_state=42),
-        cv=5,
+        meta_model=GradientBoostingRegressor(n_estimators=30, random_state=42),
+        cv=3,
         use_features_in_meta=True
     )
-    model.fit(X, y)
+    trained_model.fit(X, y)
     
-    scaler = StandardScaler()
-    scaler.fit(X)
+    scaler_obj = StandardScaler()
+    scaler_obj.fit(X)
     
-    # Save newly trained objects with the current environment's scikit-learn
+    model = trained_model
+    scaler = scaler_obj
+    
+    # Save newly trained objects with current scikit-learn version
     try:
         joblib.dump(model, os.path.join(BASE_DIR, 'stacking_model.pkl'))
         joblib.dump(scaler, os.path.join(BASE_DIR, 'scaler.pkl'))
         joblib.dump(label_encoder, os.path.join(BASE_DIR, 'label_encoder.pkl'))
         print("Model başarıyla kaydedildi!")
     except Exception as e:
-        print(f"Model kaydetme hatası: {e}")
+        print(f"Model kaydetme logu: {e}")
     
     return True
 
-def load_model_and_preprocessing():
-    """Model ve preprocessing nesnelerini yükle, hata olursa yeniden eğit"""
+def ensure_model_loaded():
+    """Modelin yüklü olduğunu garanti eder (Lazy Loading)"""
     global model, scaler, label_encoder
-    
-    try:
-        model = joblib.load(os.path.join(BASE_DIR, 'stacking_model.pkl'))
-        scaler = joblib.load(os.path.join(BASE_DIR, 'scaler.pkl'))
-        label_encoder = joblib.load(os.path.join(BASE_DIR, 'label_encoder.pkl'))
-        print("Model ve preprocessing nesneleri başarıyla yüklendi!")
+    if model is not None and label_encoder is not None:
         return True
-    except Exception as e:
-        print(f"Model yüklenirken hata oluştu ({e}), otomatik eğitim başlatılıyor...")
-        return train_fallback_model()
+        
+    with model_lock:
+        if model is not None and label_encoder is not None:
+            return True
+        try:
+            model = joblib.load(os.path.join(BASE_DIR, 'stacking_model.pkl'))
+            scaler = joblib.load(os.path.join(BASE_DIR, 'scaler.pkl'))
+            label_encoder = joblib.load(os.path.join(BASE_DIR, 'label_encoder.pkl'))
+            print("Model dosyadan başarıyla yüklendi!")
+            return True
+        except Exception as e:
+            print(f"Model dosyadan okunamadı ({e}), anında eğitiliyor...")
+            return train_fallback_model()
 
-# Uygulama başlarken modeli hazırla
-load_model_and_preprocessing()
+# Modeli arka planda sessizce yükle / hazırla (Port açılışını asla engellemez)
+try:
+    threading.Thread(target=ensure_model_loaded, daemon=True).start()
+except Exception:
+    pass
 
 def prepare_input_data(form_data):
     """Form verilerini model için hazırla"""
@@ -202,10 +211,18 @@ def prepare_input_data(form_data):
     input_data['VERİ\n ÇEŞİTLİLİĞİ'] = float(form_data.get('data_diversity', 5))
     input_data['VERİ KALİTESİ'] = float(form_data.get('data_quality', 5))
     
-    if label_encoder is not None and research_design in label_encoder.classes_:
+    if label_encoder is not None and hasattr(label_encoder, 'classes_') and research_design in label_encoder.classes_:
         input_data['NİTEL ARAŞTIMA DESENİ'] = label_encoder.transform([research_design])[0]
     else:
-        input_data['NİTEL ARAŞTIMA DESENİ'] = 0
+        # Sabit desen indeksleri
+        design_map = {
+            'Anlatı Araştırması': 0,
+            'Etnografik Araştırma': 1,
+            'Fenomenoloji': 2,
+            'Gömülü Kuram': 3,
+            'Örnek Olay': 4
+        }
+        input_data['NİTEL ARAŞTIMA DESENİ'] = design_map.get(research_design, 0)
     
     df = pd.DataFrame([input_data])
     return df[FEATURE_COLUMNS]
@@ -215,13 +232,17 @@ def index():
     """Ana sayfa"""
     return render_template('index.html')
 
+@app.route('/health')
+def health():
+    """Sağlık kontrolü"""
+    return jsonify({'status': 'ok', 'model_ready': model is not None})
+
 @app.route('/predict', methods=['POST'])
 def predict():
     """Tahmin yap"""
     global model
     try:
-        if model is None:
-            load_model_and_preprocessing()
+        ensure_model_loaded()
             
         form_data = request.form.to_dict()
         input_df = prepare_input_data(form_data)
@@ -248,5 +269,6 @@ def about():
     return render_template('about.html')
 
 if __name__ == '__main__':
-    print("Web uygulaması başlatılıyor...")
-    app.run(debug=True, host='0.0.0.0', port=8080)
+    port = int(os.environ.get('PORT', 8080))
+    print(f"Web uygulaması {port} portunda başlatılıyor...")
+    app.run(debug=True, host='0.0.0.0', port=port)
