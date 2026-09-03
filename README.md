@@ -1,3 +1,13 @@
+---
+title: Nitel Orneklem Buyuklugu Tahmin Sistemi
+emoji: 📊
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # 📊 Nitel Araştırma Örneklem Büyüklüğü Tahmin Sistemi
 
 Bu proje, nitel araştırmalarda veri doygunluğuna ulaşmak için gereken optimal örneklem büyüklüğünün makine öğrenmesi algoritmalarıyla tahmin edilmesini sağlayan web tabanlı bir karar destek sistemidir.
@@ -31,13 +41,6 @@ pip install -r requirements.txt
 ```bash
 python app.py
 ```
-Uygulama `http://localhost:8080` adresinde çalışacaktır.
-
----
-
-## 🚀 Canlıya Dağıtım (Deployment)
-
-Proje; **Render**, **Railway**, **Fly.io** veya herhangi bir Linux sanal sunucu (Ubuntu / Gunicorn / Nginx) üzerinde doğrudan çalıştırılmaya uygun şekilde yapılandırılmıştır.
 
 ---
 
